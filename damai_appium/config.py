@@ -6,7 +6,6 @@ __Description__ = "配置类"
 __Created__ = 2023/10/27 09:54
 """
 import json
-import re
 
 
 class Config:
@@ -23,13 +22,7 @@ class Config:
     @staticmethod
     def load_config():
         with open('config.jsonc', 'r', encoding='utf-8') as config_file:
-            content = config_file.read()
-            # 去掉 // 的注释
-            content = re.sub(r'//.*', '', content)
-            # content = re.sub(r'/\*[\s\S]*?\*/', '', content)
-            print(content)
-            config = json.loads(content)
-            # config = json.load(config_file)
+            config = json.load(config_file)
         return Config(config['server_url'],
                       config['keyword'],
                       config['users'],
