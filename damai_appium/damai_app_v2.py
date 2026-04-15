@@ -29,6 +29,12 @@ class DamaiBot:
         self.wait = None
         self.device_name = None
         self.original_ime = None
+        print(
+            "当前配置: "
+            f"keyword={self.config.keyword}, city={self.config.city}, "
+            f"date={self.config.date}, price={self.config.price}, "
+            f"if_commit_order={self.config.if_commit_order}"
+        )
         self._setup_driver()
 
     def _setup_driver(self):
@@ -72,16 +78,19 @@ class DamaiBot:
 
         self.driver = self._create_driver_with_fallback(capabilities)
 
-        # 更激进的性能优化设置
-        self.driver.update_settings({
-            "waitForIdleTimeout": 0,  # 空闲时间，0 表示不等待，让 UIAutomator2 不等页面“空闲”再返回
-            "actionAcknowledgmentTimeout": 0,  # 禁止等待动作确认
-            "keyInjectionDelay": 0,  # 禁止输入延迟
-            "waitForSelectorTimeout": 300,  # 从500减少到300ms
-            "ignoreUnimportantViews": False,  # 保持false避免元素丢失
-            "allowInvisibleElements": True,
-            "enableNotificationListener": False,  # 禁用通知监听
-        })
+        # 更激进的性能优化设置。部分设备会在此调用超时，失败时降级为默认设置继续执行。
+        try:
+            self.driver.update_settings({
+                "waitForIdleTimeout": 0,  # 空闲时间，0 表示不等待，让 UIAutomator2 不等页面“空闲”再返回
+                "actionAcknowledgmentTimeout": 0,  # 禁止等待动作确认
+                "keyInjectionDelay": 0,  # 禁止输入延迟
+                "waitForSelectorTimeout": 300,  # 从500减少到300ms
+                "ignoreUnimportantViews": False,  # 保持false避免元素丢失
+                "allowInvisibleElements": True,
+                "enableNotificationListener": False,  # 禁用通知监听
+            })
+        except Exception as exc:
+            print(f"警告: update_settings 失败，已降级继续执行: {exc}")
 
         # 极短的显式等待，抢票场景下速度优先
         self.wait = WebDriverWait(self.driver, 2)  # 从5秒减少到2秒
@@ -344,6 +353,138 @@ class DamaiBot:
                 continue
         return False
 
+    def _wait_for_any_element(self, selectors, timeout=1.2):
+        """按顺序查找第一个可用元素。"""
+        for by, value in selectors:
+            try:
+                return WebDriverWait(self.driver, timeout).until(
+                    EC.presence_of_element_located((by, value))
+                )
+            except TimeoutException:
+                continue
+        return None
+
+    def _is_on_target_event_detail(self, keyword):
+        """校验当前是否在目标演出详情页，避免误购。"""
+        keyword = (keyword or "").strip()
+        detail_marker_ids = [
+            "cn.damai:id/trade_project_detail_purchase_status_bar_container_fl",
+            "cn.damai:id/project_detail_perform_price_flowlayout",
+            "cn.damai:id/tv_tour_city",
+        ]
+        has_detail_marker = any(self.driver.find_elements(By.ID, marker) for marker in detail_marker_ids)
+        if not has_detail_marker:
+            return False
+
+        if not keyword:
+            return has_detail_marker
+
+        keyword_selectors = [
+            (AppiumBy.ANDROID_UIAUTOMATOR, f'new UiSelector().textContains("{keyword}")'),
+            (By.XPATH, f'//*[contains(@text,"{keyword}")]'),
+        ]
+        keyword_element = self._wait_for_any_element(keyword_selectors, timeout=0.6)
+        return keyword_element is not None
+
+    def _open_search_entry(self, max_back_steps=3):
+        """打开搜索入口；若不在首页会尝试回退。"""
+        search_entry_selectors = [
+            (By.ID, "cn.damai:id/homepage_header_search_btn"),
+            (By.ID, "homepage_header_search_btn"),
+            (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().descriptionContains("搜索")'),
+            (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().textContains("搜索")'),
+        ]
+
+        for _ in range(max_back_steps + 1):
+            if self.smart_wait_and_click(*search_entry_selectors[0], search_entry_selectors[1:], timeout=1.0):
+                return True
+
+            try:
+                self.driver.back()
+                time.sleep(0.4)
+            except Exception:
+                pass
+
+            self.dismiss_startup_popups()
+
+        return False
+
+    def _search_and_open_target_event(self):
+        """强制按 keyword 定位目标演出并进入详情页。"""
+        keyword = (self.config.keyword or "").strip()
+        if not keyword:
+            print("安全拦截: keyword 为空，已停止本次尝试")
+            return False
+
+        if self._is_on_target_event_detail(keyword):
+            print(f"已在目标演出详情页: {keyword}")
+            return True
+
+        print(f"定位目标演出: {keyword}")
+        print("步骤1/4: 打开搜索入口")
+        if not self._open_search_entry():
+            print("安全拦截: 无法打开搜索入口，已停止本次尝试")
+            return False
+
+        print("步骤2/4: 输入关键词")
+        search_input_selectors = [
+            (By.ID, "cn.damai:id/header_search_v2_input"),
+            (By.ID, "header_search_v2_input"),
+            (By.XPATH, '//*[@resource-id="cn.damai:id/header_search_v2_input"]'),
+        ]
+        search_input = self._wait_for_any_element(search_input_selectors, timeout=1.5)
+        if not search_input:
+            print("安全拦截: 未找到搜索输入框，已停止本次尝试")
+            return False
+
+        try:
+            search_input.clear()
+        except Exception:
+            pass
+
+        search_input.send_keys(keyword)
+        try:
+            self.driver.press_keycode(66)  # Enter
+        except Exception:
+            try:
+                self.driver.execute_script("mobile: performEditorAction", {"action": "search"})
+            except Exception:
+                pass
+
+        time.sleep(0.6)
+
+        print("步骤3/4: 点击匹配结果")
+        keyword_result_selectors = [
+            (By.XPATH, f'(//*[@resource-id="cn.damai:id/ll_search_item"]//*[contains(@text,"{keyword}")]/ancestor::*[@resource-id="cn.damai:id/ll_search_item"])[1]'),
+            (By.XPATH, f'(//*[@resource-id="cn.damai:id/ll_search_item"]//*[contains(@text,"{keyword}")])[1]'),
+            (By.XPATH, '(//*[@resource-id="cn.damai:id/ll_search_item"])[1]'),
+            (By.XPATH, '//androidx.recyclerview.widget.RecyclerView[@resource-id="cn.damai:id/search_v2_suggest_recycler"]/android.widget.RelativeLayout[1]'),
+        ]
+        clicked_any = self.smart_wait_and_click(*keyword_result_selectors[0], keyword_result_selectors[1:], timeout=1.5)
+        if clicked_any:
+            time.sleep(0.5)
+
+        if not self._is_on_target_event_detail(keyword):
+            first_result_selectors = [
+                (By.XPATH, '(//*[@resource-id="cn.damai:id/ll_search_item"])[1]'),
+                (By.XPATH, '(//android.widget.LinearLayout[@resource-id="cn.damai:id/ll_search_item"])[1]'),
+            ]
+            clicked_any = self.smart_wait_and_click(*first_result_selectors[0], first_result_selectors[1:], timeout=2.0) or clicked_any
+            if clicked_any:
+                time.sleep(0.8)
+
+        if not clicked_any:
+            print(f"安全拦截: 未找到目标演出[{keyword}]搜索结果，已停止本次尝试")
+            return False
+
+        print("步骤4/4: 校验是否进入目标详情页")
+        if not self._is_on_target_event_detail(keyword):
+            print(f"安全拦截: 未能确认进入目标演出[{keyword}]详情页，已停止本次尝试")
+            return False
+
+        print(f"已确认目标演出详情页: {keyword}")
+        return True
+
     def run_ticket_grabbing(self):
         """执行抢票主流程"""
         try:
@@ -351,6 +492,13 @@ class DamaiBot:
             start_time = time.time()
 
             self.dismiss_startup_popups()
+
+            if not self._search_and_open_target_event():
+                return False
+
+            if not self._is_on_target_event_detail(self.config.keyword):
+                print(f"安全拦截: 当前页面不属于目标演出[{self.config.keyword}]，停止本次尝试")
+                return False
 
             # 1. 城市选择 - 准备多个备选方案
             print("选择城市...")

@@ -1,13 +1,14 @@
 {
   "server_url": "http://127.0.0.1:4723",
-  "keyword": "周深",
+  "device_name": "aae93537",
+  "keyword": "音律联觉",
   "users": [
-    "王胜",
-    "潘鸿运"
+    "程帅",
+    "阙莛轩"
   ],
-  "city": "深圳",
-  "date": "12.06",
-  "price": "内场1199元",
-  "price_index": 5,
-  "if_commit_order": true
+  "city": "上海",
+  "date": "5.2",
+  "price": "1280（看台）",
+  "price_index": 4,
+  "if_commit_order": false
 }
