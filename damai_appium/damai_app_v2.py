@@ -7,15 +7,19 @@ __Created__ = 2025/09/13 19:27
 """
 
 import time
+import subprocess
 from appium import webdriver
 from appium.options.common.base import AppiumOptions
 from appium.webdriver.common.appiumby import AppiumBy
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 
 from config import Config
+
+
+APPIUM_UNICODE_IME = "io.appium.settings/.UnicodeIME"
 
 
 class DamaiBot:
@@ -23,16 +27,35 @@ class DamaiBot:
         self.config = Config.load_config()
         self.driver = None
         self.wait = None
+        self.device_name = None
+        self.original_ime = None
         self._setup_driver()
 
     def _setup_driver(self):
         """初始化驱动配置"""
+        self._check_runtime_compatibility()
+
+        config_device_name = (self.config.device_name or "").strip()
+        if config_device_name:
+            self._assert_device_online(config_device_name)
+            device_name = config_device_name
+        else:
+            device_name = self._detect_device_name()
+
+        self.device_name = device_name
+        self._remember_current_ime()
+
+        app_package = "cn.damai"
+        app_activity = self._resolve_main_activity(app_package)
+
+        print(f"使用设备: {device_name}")
+        print(f"检测到启动 Activity: {app_activity}")
+
         capabilities = {
             "platformName": "Android",  # 操作系统
-            "platformVersion": "16",  # 系统版本
-            "deviceName": "emulator-5554",  # 设备名称
-            "appPackage": "cn.damai",  # app 包名
-            "appActivity": ".launcher.splash.SplashMainActivity",  # app 启动 Activity
+            "deviceName": device_name,  # 设备名称
+            "appPackage": app_package,  # app 包名
+            "appActivity": app_activity,  # app 启动 Activity
             "unicodeKeyboard": True,  # 支持 Unicode 输入
             "resetKeyboard": True,  # 隐藏键盘
             "noReset": True,  # 不重置 app
@@ -47,9 +70,7 @@ class DamaiBot:
             "adbExecTimeout": 20000,
         }
 
-        device_app_info = AppiumOptions()
-        device_app_info.load_capabilities(capabilities)
-        self.driver = webdriver.Remote(self.config.server_url, options=device_app_info)
+        self.driver = self._create_driver_with_fallback(capabilities)
 
         # 更激进的性能优化设置
         self.driver.update_settings({
@@ -64,6 +85,183 @@ class DamaiBot:
 
         # 极短的显式等待，抢票场景下速度优先
         self.wait = WebDriverWait(self.driver, 2)  # 从5秒减少到2秒
+
+    def _create_driver_with_fallback(self, capabilities):
+        """创建会话，若 realme 等机型上 io.appium.settings 初始化不稳定则自动降级重试。"""
+        device_app_info = AppiumOptions()
+        device_app_info.load_capabilities(capabilities)
+
+        try:
+            return webdriver.Remote(self.config.server_url, options=device_app_info)
+        except WebDriverException as exc:
+            if "Appium Settings app is not running" not in str(exc):
+                self._restore_device_ime()
+                raise
+
+            print("警告: Appium Settings 初始化超时，自动启用 skipDeviceInitialization 进行重试")
+            fallback_capabilities = dict(capabilities)
+            fallback_capabilities["skipDeviceInitialization"] = True
+            fallback_options = AppiumOptions()
+            fallback_options.load_capabilities(fallback_capabilities)
+            try:
+                return webdriver.Remote(self.config.server_url, options=fallback_options)
+            except Exception:
+                self._restore_device_ime()
+                raise
+
+    @staticmethod
+    def _run_command(command, timeout=10):
+        """执行系统命令并返回结果"""
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        return result.returncode, (result.stdout or "").strip(), (result.stderr or "").strip()
+
+    def _adb_command(self, args):
+        """生成 adb 命令，优先固定到当前设备。"""
+        if self.device_name:
+            return ["adb", "-s", self.device_name] + args
+        return ["adb"] + args
+
+    def _remember_current_ime(self):
+        """记录脚本启动前的默认输入法。"""
+        code, ime, _ = self._run_command(
+            self._adb_command(["shell", "settings", "get", "secure", "default_input_method"]),
+            timeout=8,
+        )
+        ime = (ime or "").strip()
+        if code == 0 and ime and ime.lower() != "null":
+            self.original_ime = ime
+            print(f"记录初始输入法: {self.original_ime}")
+        else:
+            self.original_ime = None
+            print("警告: 未能读取初始输入法，后续将尝试回退到非 Appium 输入法")
+
+    def _list_enabled_imes(self):
+        """读取设备已启用输入法列表。"""
+        code, stdout, _ = self._run_command(self._adb_command(["shell", "ime", "list", "-s"]), timeout=8)
+        if code != 0:
+            return []
+        return [line.strip() for line in stdout.splitlines() if line.strip()]
+
+    def _restore_device_ime(self):
+        """恢复默认输入法，防止 Appium UnicodeIME 残留。"""
+        enabled_imes = self._list_enabled_imes()
+        if not enabled_imes:
+            print("警告: 未读取到输入法列表，跳过输入法恢复")
+            return
+
+        target_ime = None
+        if self.original_ime and self.original_ime in enabled_imes and self.original_ime != APPIUM_UNICODE_IME:
+            target_ime = self.original_ime
+        else:
+            for ime in enabled_imes:
+                if ime != APPIUM_UNICODE_IME:
+                    target_ime = ime
+                    break
+
+        if not target_ime:
+            print("警告: 未找到可恢复的非 Appium 输入法")
+            return
+
+        code, current_ime, _ = self._run_command(
+            self._adb_command(["shell", "settings", "get", "secure", "default_input_method"]),
+            timeout=8,
+        )
+        current_ime = (current_ime or "").strip()
+        if code == 0 and current_ime == target_ime:
+            return
+
+        self._run_command(self._adb_command(["shell", "ime", "enable", target_ime]), timeout=8)
+        set_code, _, set_err = self._run_command(self._adb_command(["shell", "ime", "set", target_ime]), timeout=8)
+        if set_code == 0:
+            print(f"已恢复默认输入法: {target_ime}")
+        else:
+            print(f"警告: 恢复输入法失败: {set_err}")
+
+    def _detect_device_name(self):
+        """自动检测在线设备，优先使用首个 device 状态设备"""
+        devices = self._get_online_devices()
+        if not devices:
+            raise RuntimeError("未检测到在线 Android 设备，请先启动模拟器或连接真机")
+        return devices[0]
+
+    def _get_online_devices(self):
+        """获取所有在线设备序列号"""
+        try:
+            code, stdout, _ = self._run_command(["adb", "devices"], timeout=8)
+        except FileNotFoundError:
+            raise RuntimeError("未找到 adb，请确认 Android SDK platform-tools 已加入 PATH")
+
+        if code != 0:
+            raise RuntimeError("执行 adb devices 失败，请检查 Android SDK 环境")
+
+        devices = []
+        for line in stdout.splitlines()[1:]:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "device":
+                devices.append(parts[0])
+
+        return devices
+
+    def _assert_device_online(self, target_device):
+        """校验指定设备是否在线"""
+        devices = self._get_online_devices()
+        if target_device not in devices:
+            raise RuntimeError(
+                f"配置的 device_name={target_device} 未在线，当前在线设备: {', '.join(devices) if devices else '无'}"
+            )
+
+        return True
+
+    def _check_runtime_compatibility(self):
+        """在已知不兼容的模拟器环境提前失败，避免进入流程后才闪退。"""
+        code_abi, abi, _ = self._run_command(["adb", "shell", "getprop", "ro.product.cpu.abi"], timeout=8)
+        code_qemu, qemu, _ = self._run_command(["adb", "shell", "getprop", "ro.kernel.qemu"], timeout=8)
+
+        if code_abi != 0 or code_qemu != 0:
+            print("警告: 无法读取设备 ABI/QEMU 属性，跳过兼容性检查")
+            return
+
+        abi = (abi or "").strip().lower()
+        qemu = (qemu or "").strip()
+        is_emulator = qemu == "1"
+        is_x86_family = "x86" in abi
+
+        if is_emulator and is_x86_family:
+            raise RuntimeError(
+                "当前为 x86 模拟器环境，已确认大麦在点击同意后会发生 Native 崩溃(SIGSEGV/libsgmainso)。"
+                "请改用 ARM64 真机，或切换到 ARM64 模拟器/MuMu 的 ARM 兼容实例。"
+            )
+
+    def _resolve_main_activity(self, package_name):
+        """自动解析应用主启动 Activity，避免版本升级后 Activity 变更导致启动失败"""
+        code, packages, _ = self._run_command(["adb", "shell", "pm", "list", "packages"], timeout=10)
+        if code != 0 or f"package:{package_name}" not in packages:
+            raise RuntimeError(f"未检测到应用 {package_name}，请先在设备安装大麦 APP")
+
+        code, stdout, stderr = self._run_command(
+            ["adb", "shell", "cmd", "package", "resolve-activity", "--brief", package_name], timeout=10
+        )
+        resolved_output = f"{stdout}\n{stderr}".strip()
+
+        if code != 0 or "No activity found" in resolved_output:
+            raise RuntimeError(f"无法解析 {package_name} 的启动 Activity，请确认 APP 可正常打开")
+
+        for line in resolved_output.splitlines():
+            line = line.strip()
+            if "/" not in line:
+                continue
+            component = line.split()[-1]
+            if "/" not in component:
+                continue
+            pkg, activity = component.split("/", 1)
+            if pkg == package_name:
+                return activity
+            return component
+
+        raise RuntimeError(f"解析 {package_name} 启动 Activity 失败，原始输出: {resolved_output}")
 
     def ultra_fast_click(self, by, value, timeout=1.5):
         """超快速点击 - 适合抢票场景"""
@@ -124,6 +322,8 @@ class DamaiBot:
                 time.sleep(0.01)
             print(f"点击用户: {value}")
 
+        return len(coordinates)
+
     def smart_wait_and_click(self, by, value, backup_selectors=None, timeout=1.5):
         """智能等待和点击 - 支持备用选择器"""
         selectors = [(by, value)]
@@ -149,6 +349,8 @@ class DamaiBot:
         try:
             print("开始抢票流程...")
             start_time = time.time()
+
+            self.dismiss_startup_popups()
 
             # 1. 城市选择 - 准备多个备选方案
             print("选择城市...")
@@ -228,25 +430,41 @@ class DamaiBot:
 
             # 5. 确定购买
             print("确定购买...")
-            if not self.ultra_fast_click(By.ID, "btn_buy_view"):
+            confirm_clicked = self.ultra_fast_click(By.ID, "btn_buy_view")
+            if not confirm_clicked:
                 # 备用按钮文本
-                self.ultra_fast_click(AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().textMatches(".*确定.*|.*购买.*")')
+                confirm_clicked = self.ultra_fast_click(
+                    AppiumBy.ANDROID_UIAUTOMATOR,
+                    'new UiSelector().textMatches(".*确定.*|.*购买.*")'
+                )
+
+            if not confirm_clicked:
+                print("确定购买失败")
+                return False
 
             # 6. 批量选择用户
             print("选择用户...")
             user_clicks = [(AppiumBy.ANDROID_UIAUTOMATOR, f'new UiSelector().text("{user}")') for user in
                            self.config.users]
             # self.batch_click(user_clicks, delay=0.05)  # 极短延迟
-            self.ultra_batch_click(user_clicks)
+            selected_count = self.ultra_batch_click(user_clicks)
+            if self.config.users and selected_count == 0:
+                print("未选择到任何观演人，流程失败")
+                return False
 
             # 7. 提交订单
-            print("提交订单...")
-            submit_selectors = [
-                (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("立即提交")'),
-                (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().textMatches(".*提交.*|.*确认.*")'),
-                (By.XPATH, '//*[contains(@text,"提交")]')
-            ]
-            self.smart_wait_and_click(*submit_selectors[0], submit_selectors[1:])
+            if self.config.if_commit_order:
+                print("提交订单...")
+                submit_selectors = [
+                    (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("立即提交")'),
+                    (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().textMatches(".*提交.*|.*确认.*")'),
+                    (By.XPATH, '//*[contains(@text,"提交")]')
+                ]
+                if not self.smart_wait_and_click(*submit_selectors[0], submit_selectors[1:]):
+                    print("提交订单按钮未找到")
+                    return False
+            else:
+                print("测试模式: 已到达提交订单步骤，按配置跳过实际提交")
 
             end_time = time.time()
             print(f"抢票流程完成，耗时: {end_time - start_time:.2f}秒")
@@ -257,7 +475,12 @@ class DamaiBot:
             return False
         finally:
             time.sleep(1)  # 给最后的操作一点时间
-            self.driver.quit()
+            try:
+                if self.driver:
+                    self.driver.quit()
+            finally:
+                self._restore_device_ime()
+                self.driver = None
 
     def run_with_retry(self, max_retries=3):
         """带重试机制的抢票"""
@@ -280,6 +503,34 @@ class DamaiBot:
 
         print("所有尝试均失败")
         return False
+
+    def dismiss_startup_popups(self):
+        """处理首启隐私协议、权限授权等常见弹窗"""
+        popup_selectors = [
+            (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().text("同意")'),
+            (By.XPATH, '//*[contains(@text,"同意")]'),
+            (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().textMatches(".*允许.*")'),
+            (By.XPATH, '//*[contains(@text,"允许")]'),
+            (AppiumBy.ANDROID_UIAUTOMATOR, 'new UiSelector().textMatches(".*我知道了.*|.*知道了.*")'),
+        ]
+
+        handled = 0
+        for _ in range(3):
+            clicked_this_round = False
+            for by, value in popup_selectors:
+                try:
+                    if self.smart_wait_and_click(by, value, timeout=0.8):
+                        handled += 1
+                        clicked_this_round = True
+                        print(f"已处理启动弹窗: {value}")
+                        break
+                except Exception:
+                    continue
+            if not clicked_this_round:
+                break
+
+        if handled > 0:
+            print(f"启动弹窗处理完成，共点击 {handled} 次")
 
 
 # 使用示例
