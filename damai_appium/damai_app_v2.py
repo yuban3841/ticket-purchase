@@ -30,6 +30,7 @@ class DamaiBot:
         self.device_name = None
         self.original_ime = None
         self.target_detail_confirmed = False
+        self.last_run_error = ""
         print(
             "当前配置: "
             f"keyword={self.config.keyword}, city={self.config.city}, "
@@ -69,6 +70,9 @@ class DamaiBot:
             "skipServerInstallation": False,  # 跳过服务器安装
             "ignoreHiddenApiPolicyError": True,  # 忽略隐藏 API 策略错误
             "disableWindowAnimation": True,  # 禁用窗口动画
+            "uiautomator2ServerLaunchTimeout": 120000,
+            "uiautomator2ServerInstallTimeout": 120000,
+            "uiautomator2ServerReadTimeout": 120000,
             # 优化性能配置
             "mjpegServerFramerate": 1,  # 降低截图帧率
             "shouldTerminateApp": False,
@@ -77,13 +81,13 @@ class DamaiBot:
 
         self.driver = self._create_driver_with_fallback(capabilities)
 
-        # 更激进的性能优化设置。部分设备会在此调用超时，失败时降级为默认设置继续执行。
+        # 采用稳态设置，优先保证 UiAutomator2 会话稳定。
         try:
             self.driver.update_settings({
-                "waitForIdleTimeout": 0,  # 空闲时间，0 表示不等待，让 UIAutomator2 不等页面“空闲”再返回
-                "actionAcknowledgmentTimeout": 0,  # 禁止等待动作确认
-                "keyInjectionDelay": 0,  # 禁止输入延迟
-                "waitForSelectorTimeout": 300,  # 从500减少到300ms
+                "waitForIdleTimeout": 1000,
+                "actionAcknowledgmentTimeout": 500,
+                "keyInjectionDelay": 10,
+                "waitForSelectorTimeout": 1000,
                 "ignoreUnimportantViews": False,  # 保持false避免元素丢失
                 "allowInvisibleElements": True,
                 "enableNotificationListener": False,  # 禁用通知监听
@@ -593,6 +597,7 @@ class DamaiBot:
     def run_ticket_grabbing(self):
         """执行抢票主流程"""
         try:
+            self.last_run_error = ""
             print("开始抢票流程...")
             start_time = time.time()
 
@@ -733,6 +738,7 @@ class DamaiBot:
             return True
 
         except Exception as e:
+            self.last_run_error = str(e)
             print(f"抢票过程发生错误: {e}")
             return False
 
@@ -748,6 +754,16 @@ class DamaiBot:
                 print(f"第 {attempt + 1} 次尝试失败")
                 if attempt >= max_retries - 1:
                     break
+
+                error_text = (self.last_run_error or "").lower()
+                if (
+                    "instrumentation process is not running" in error_text
+                    or "cannot be proxied" in error_text
+                    or "socket hang up" in error_text
+                ):
+                    print("恢复策略: 检测到 UiAutomator2 会话异常，跳过回退直接重建会话")
+                    self._rebuild_driver_session()
+                    continue
 
                 print("2秒后重试...")
                 time.sleep(2)
