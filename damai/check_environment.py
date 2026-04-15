@@ -13,6 +13,7 @@ import sys
 
 
 CONFIG_FILE_NAME = 'config.json'
+MOBILE_ONLY_MODE = True
 
 
 def _candidate_config_paths():
@@ -336,6 +337,18 @@ def check_config_file():
 
 
 def main():
+    if MOBILE_ONLY_MODE:
+        print("\n" + "=" * 60)
+        print("Web 端环境检查已停用（仅支持移动端抢票）")
+        print("=" * 60)
+        print("\n请使用移动端流程:")
+        print("  1) 环境检查: ./check_environment.sh")
+        print("  2) 启动 Appium: ./start_appium.sh")
+        print("  3) 开始抢票: ./start_ticket_grabbing.sh")
+        print("  4) 或直接运行: python damai_appium/damai_app_v2.py")
+        print()
+        return 2
+
     print("\n" + "=" * 60)
     print("大麦抢票脚本 - 环境检查工具")
     print("=" * 60)

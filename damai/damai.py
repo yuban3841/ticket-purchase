@@ -15,6 +15,7 @@ from config import Config
 
 
 CONFIG_FILE_NAME = 'config.json'
+MOBILE_ONLY_MODE = True
 
 
 def _candidate_config_paths():
@@ -126,6 +127,17 @@ def load_config(config_file):
 
 
 def grab():
+    if MOBILE_ONLY_MODE:
+        print("\n" + "=" * 50)
+        print("Web 端入口已停用（仅支持移动端抢票）")
+        print("=" * 50)
+        print("\n请使用以下移动端流程:")
+        print("1) 启动 Appium: npx appium --address 127.0.0.1 --port 4723 --relaxed-security")
+        print("2) 运行脚本: python damai_appium/damai_app_v2.py")
+        print("3) 配置文件: damai_appium/config.jsonc")
+        print()
+        sys.exit(2)
+
     print("\n" + "=" * 50)
     print("大麦网抢票脚本启动")
     print("=" * 50)

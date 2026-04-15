@@ -1,10 +1,13 @@
 # 大麦抢票自动化系统
 
-一个基于Selenium和Appium的大麦网抢票自动化工具，支持Web端和移动端抢票。
+一个基于 Appium 的大麦网移动端抢票自动化工具。
+
+> ⚠️ 当前仓库仅支持移动端抢票（Android + Appium）。
+> Web/Chrome 流程已停用，请勿运行 `python damai/damai.py`。
 
 ## 🚀 功能特性
 
-- **双端支持**：支持Web端（Selenium）和移动端（Appium）抢票
+- **移动端专用**：仅支持 Android + Appium 抢票
 - **智能抢票**：自动选择城市、票价、观演人员
 - **高性能**：优化的点击策略，适合抢票场景
 - **可配置**：灵活的配置文件，支持多种演出设置
@@ -17,9 +20,8 @@
 - **Node.js**: 20.19.0+ 或 22.12.0+ 或 24.0.0+
 - **操作系统**: macOS / Windows / Linux
 
-### Web端抢票
-- **Chrome浏览器**: 最新版本
-- **ChromeDriver**: 自动下载
+### Web端抢票（已停用）
+- **已停用**：Web/Chrome 抢票入口不再维护
 
 ### 移动端抢票
 - **Android SDK**: 已配置环境变量
@@ -109,20 +111,9 @@ adb devices
 | `price_index` | number | 票价索引（从0开始） | `1` |
 | `if_commit_order` | boolean | 是否自动提交订单 | `true` |
 
-### Web端配置 (config.json)
+### Web端配置（已停用）
 
-```json
-{
-  "index_url": "https://www.damai.cn/",
-  "login_url": "https://passport.damai.cn/login",
-  "target_url": "https://detail.damai.cn/item.htm?id=xxx",
-  "users": ["张三", "李四"],
-  "city": "广州",
-  "date": "2023-10-28",
-  "price": "1039",
-  "if_commit_order": true
-}
-```
+Web 端已停用，`damai/config.json` 仅保留为历史兼容文件，不再作为启动入口。
 
 ## 🚀 使用方法
 
@@ -163,16 +154,9 @@ cd damai_appium
 ANDROID_HOME=/Users/shengwang/Library/Android/sdk ANDROID_SDK_ROOT=/Users/shengwang/Library/Android/sdk python damai_app_v2.py
 ```
 
-### Web端抢票
+### Web端抢票（已停用）
 
-#### 1. 配置参数
-编辑 `damai/config.json` 文件，设置目标演出URL和其他参数。
-
-#### 2. 运行抢票脚本
-```bash
-cd damai
-python damai.py
-```
+Web 端入口已停用，不再提供执行说明。
 
 ## 🔧 故障排除
 
@@ -246,7 +230,7 @@ adb shell pm list packages | grep damai
 
 ```
 ticket-purchase/
-├── damai/                    # Web端抢票
+├── damai/                    # 已停用（历史 Web 端代码）
 │   ├── damai.py             # 主程序
 │   ├── config.py            # 配置类
 │   ├── config.json          # 配置文件
