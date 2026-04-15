@@ -14,15 +14,50 @@ from concert import Concert
 from config import Config
 
 
+CONFIG_FILE_NAME = 'config.json'
+
+
+def _candidate_config_paths():
+    """返回可能的配置文件路径（按优先级）。"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    cwd = os.getcwd()
+
+    candidates = [
+        os.path.join(cwd, CONFIG_FILE_NAME),
+        os.path.join(script_dir, CONFIG_FILE_NAME),
+        os.path.join(project_root, CONFIG_FILE_NAME),
+    ]
+
+    unique_candidates = []
+    for path in candidates:
+        normalized = os.path.normpath(path)
+        if normalized not in unique_candidates:
+            unique_candidates.append(normalized)
+
+    return unique_candidates
+
+
+def resolve_config_file():
+    """自动定位配置文件。"""
+    for path in _candidate_config_paths():
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def check_config_file():
     """检查配置文件是否存在和有效"""
-    config_file = 'config.json'
+    config_file = resolve_config_file()
 
-    if not os.path.exists(config_file):
+    if not config_file:
         print("=" * 50)
         print("✗ 错误: 未找到配置文件 config.json")
         print("=" * 50)
-        print(f"\n请先创建 {config_file} 配置文件，包含以下内容:")
+        print("\n请在以下任一路径创建 config.json（推荐 damai/config.json）:")
+        for path in _candidate_config_paths():
+            print(f"  - {path}")
+        print("\n配置示例:")
         print("""
 {
     "index_url": "https://www.damai.cn/",
@@ -56,10 +91,12 @@ def check_config_file():
             sys.exit(1)
 
         print(f"✓ 配置文件加载成功")
+        print(f"  - 配置路径: {config_file}")
         print(f"  - 目标URL: {config['target_url']}")
         print(f"  - 观众人数: {len(config['users'])} 人")
         print(f"  - 最大重试次数: {config.get('max_retries', 1000)} 次")
         print()
+        return config_file
 
     except json.JSONDecodeError as e:
         print(f"✗ 配置文件格式错误: {e}")
@@ -69,9 +106,9 @@ def check_config_file():
         sys.exit(1)
 
 
-def load_config():
-    with open('config.json', 'r', encoding='utf-8') as config_file:
-        config = json.load(config_file)
+def load_config(config_file):
+    with open(config_file, 'r', encoding='utf-8') as config_file_obj:
+        config = json.load(config_file_obj)
     return Config(
         config['index_url'],
         config['login_url'],
@@ -95,10 +132,10 @@ def grab():
     print()
 
     # 检查配置文件
-    check_config_file()
+    config_file = check_config_file()
 
     # 加载配置文件
-    config = load_config()
+    config = load_config(config_file)
 
     # 初始化（会自动检查 Chrome 环境）
     con = Concert(config)

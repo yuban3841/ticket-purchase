@@ -63,7 +63,7 @@ pip install selenium chromedriver-autoinstaller
 
 ### 3. 配置文件
 
-在项目根目录创建 `config.json`：
+推荐编辑 `damai/config.json`（脚本会自动按以下顺序查找：当前目录 `config.json` → `damai/config.json` → 项目根目录 `config.json`）：
 
 ```json
 {
@@ -82,10 +82,10 @@ pip install selenium chromedriver-autoinstaller
 }
 ```
 
-### 4. 运行脚本
+### 4. 一键启动
 
 ```bash
-# 基础运行
+# 在项目根目录一键启动（推荐）
 python damai/damai.py
 
 # 或使用虚拟环境

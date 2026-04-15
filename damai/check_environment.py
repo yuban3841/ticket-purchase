@@ -7,8 +7,97 @@
 
 import os
 import re
+import shutil
 import subprocess
 import sys
+
+
+CONFIG_FILE_NAME = 'config.json'
+
+
+def _candidate_config_paths():
+    """返回可能的配置文件路径（按优先级）。"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    cwd = os.getcwd()
+
+    candidates = [
+        os.path.join(cwd, CONFIG_FILE_NAME),
+        os.path.join(script_dir, CONFIG_FILE_NAME),
+        os.path.join(project_root, CONFIG_FILE_NAME),
+    ]
+
+    unique_candidates = []
+    for path in candidates:
+        normalized = os.path.normpath(path)
+        if normalized not in unique_candidates:
+            unique_candidates.append(normalized)
+
+    return unique_candidates
+
+
+def _resolve_config_file():
+    for path in _candidate_config_paths():
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def _resolve_chrome_path():
+    """定位 Chrome 可执行文件路径，兼容 Windows/macOS/Linux。"""
+    candidates = [
+        shutil.which("chrome"),
+        shutil.which("chrome.exe"),
+        shutil.which("google-chrome"),
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+    ]
+
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+        program_files_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        candidates.extend([
+            os.path.join(local_app_data, "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(program_files, "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(program_files_x86, "Google", "Chrome", "Application", "chrome.exe"),
+        ])
+    else:
+        candidates.extend([
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+            "/usr/bin/google-chrome",
+            "/usr/bin/chromium-browser",
+        ])
+
+    checked = []
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            normalized = os.path.normpath(candidate)
+            if normalized not in checked:
+                checked.append(normalized)
+
+    return checked[0] if checked else None
+
+
+def _resolve_chromedriver_path():
+    """定位 ChromeDriver 可执行文件路径。"""
+    candidates = [
+        shutil.which("chromedriver"),
+        shutil.which("chromedriver.exe"),
+        "/opt/homebrew/bin/chromedriver",
+        "/usr/local/bin/chromedriver",
+        "/opt/homebrew/Caskroom/chromedriver",
+    ]
+
+    checked = []
+    for candidate in candidates:
+        if candidate and (os.path.exists(candidate) or os.path.islink(candidate)):
+            normalized = os.path.normpath(candidate)
+            if normalized not in checked:
+                checked.append(normalized)
+
+    return checked[0] if checked else None
 
 
 def _get_version_from_output(output):
@@ -73,23 +162,17 @@ def check_dependencies():
 def check_chrome():
     """检查 Chrome 浏览器"""
     print("Chrome 浏览器检查...")
-    chrome_paths = [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium-browser",
-    ]
-
-    for chrome_path in chrome_paths:
-        if os.path.exists(chrome_path):
-            version_str = _run_command_get_version([chrome_path, "--version"])
-            if version_str:
-                chrome_version = _get_version_from_output(version_str)
-                if chrome_version:
-                    print(f"  ✓ Chrome 浏览器: {version_str}")
-                    print(f"  ✓ 主版本号: {chrome_version}")
-                    print()
-                    return True
+    chrome_path = _resolve_chrome_path()
+    if chrome_path:
+        version_str = _run_command_get_version([chrome_path, "--version"])
+        if version_str:
+            chrome_version = _get_version_from_output(version_str)
+            if chrome_version:
+                print(f"  ✓ Chrome 浏览器: {version_str}")
+                print(f"  ✓ 主版本号: {chrome_version}")
+                print(f"  ✓ 路径: {chrome_path}")
+                print()
+                return True
 
     print("  ✗ 未找到 Chrome 浏览器")
     print("  请安装 Chrome: https://www.google.com/chrome/")
@@ -100,28 +183,26 @@ def check_chrome():
 def check_chromedriver():
     """检查 ChromeDriver"""
     print("ChromeDriver 检查...")
-    chromedriver_paths = [
-        "/opt/homebrew/bin/chromedriver",
-        "/usr/local/bin/chromedriver",
-        "/opt/homebrew/Caskroom/chromedriver",
-    ]
-
-    for driver_path in chromedriver_paths:
-        if os.path.exists(driver_path) or os.path.islink(driver_path):
-            version_str = _run_command_get_version([driver_path, "--version"])
-            if version_str:
-                driver_version = _get_version_from_output(version_str)
-                if driver_version:
-                    print(f"  ✓ ChromeDriver: {version_str}")
-                    print(f"  ✓ 主版本号: {driver_version}")
-                    print(f"  ✓ 路径: {driver_path}")
-                    print()
-                    return True
+    driver_path = _resolve_chromedriver_path()
+    if driver_path:
+        version_str = _run_command_get_version([driver_path, "--version"])
+        if version_str:
+            driver_version = _get_version_from_output(version_str)
+            if driver_version:
+                print(f"  ✓ ChromeDriver: {version_str}")
+                print(f"  ✓ 主版本号: {driver_version}")
+                print(f"  ✓ 路径: {driver_path}")
+                print()
+                return True
 
     print("  ⚠ 未找到 ChromeDriver")
     print("  安装方法:")
-    print("    - macOS: brew install --cask chromedriver")
-    print("    - 或使用脚本自动安装: chromedriver-autoinstaller")
+    if os.name == "nt":
+        print("    - Windows: pip install chromedriver-autoinstaller")
+        print("    - 或直接运行抢票脚本，脚本会尝试自动下载匹配版本")
+    else:
+        print("    - macOS: brew install --cask chromedriver")
+        print("    - 或使用脚本自动安装: chromedriver-autoinstaller")
     print()
     return False
 
@@ -131,15 +212,15 @@ def check_version_match():
     print("版本匹配检查...")
 
     chrome_version = None
-    chrome_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    if os.path.exists(chrome_path):
+    chrome_path = _resolve_chrome_path()
+    if chrome_path:
         version_str = _run_command_get_version([chrome_path, "--version"])
         if version_str:
             chrome_version = _get_version_from_output(version_str)
 
     driver_version = None
-    driver_path = "/opt/homebrew/bin/chromedriver"
-    if os.path.exists(driver_path) or os.path.islink(driver_path):
+    driver_path = _resolve_chromedriver_path()
+    if driver_path:
         version_str = _run_command_get_version([driver_path, "--version"])
         if version_str:
             driver_version = _get_version_from_output(version_str)
@@ -175,9 +256,9 @@ def get_chromedriver_path():
     供其他脚本导入使用
     :return: ChromeDriver 可执行文件路径
     """
-    chrome_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    chrome_path = _resolve_chrome_path()
 
-    if not os.path.exists(chrome_path):
+    if not chrome_path or not os.path.exists(chrome_path):
         raise RuntimeError("未找到 Chrome 浏览器，请先安装 Chrome")
 
     # 获取 Chrome 版本
@@ -188,19 +269,14 @@ def get_chromedriver_path():
         raise RuntimeError("无法获取 Chrome 版本")
 
     # 检查已安装的 ChromeDriver 是否匹配
-    chromedriver_paths = [
-        "/opt/homebrew/bin/chromedriver",
-        "/usr/local/bin/chromedriver",
-    ]
-
-    for driver_path in chromedriver_paths:
-        if os.path.exists(driver_path) or os.path.islink(driver_path):
-            driver_version_str = _run_command_get_version([driver_path, "--version"])
-            if driver_version_str:
-                driver_version = _get_version_from_output(driver_version_str)
-                if driver_version == chrome_version:
-                    # 版本匹配，直接使用
-                    return driver_path
+    driver_path = _resolve_chromedriver_path()
+    if driver_path:
+        driver_version_str = _run_command_get_version([driver_path, "--version"])
+        if driver_version_str:
+            driver_version = _get_version_from_output(driver_version_str)
+            if driver_version == chrome_version:
+                # 版本匹配，直接使用
+                return driver_path
 
     # 版本不匹配或不存在，使用自动安装器
     print(f"  Chrome 版本: {chrome_version}")
@@ -225,11 +301,13 @@ def get_chromedriver_path():
 def check_config_file():
     """检查配置文件"""
     print("配置文件检查...")
-    config_file = 'config.json'
+    config_file = _resolve_config_file()
 
-    if not os.path.exists(config_file):
-        print(f"  ✗ 未找到配置文件: {config_file}")
-        print(f"  请先创建配置文件")
+    if not config_file:
+        print("  ✗ 未找到配置文件 config.json")
+        print("  支持路径:")
+        for path in _candidate_config_paths():
+            print(f"    - {path}")
         print()
         return False
 
@@ -293,7 +371,7 @@ def main():
 
     if all_passed:
         print("\n✓ 所有检查通过！可以运行抢票脚本了。")
-        print("  运行命令: python damai.py\n")
+        print("  运行命令: python damai/damai.py\n")
         return 0
     else:
         print("\n✗ 部分检查未通过，请根据上述提示修复问题。\n")
