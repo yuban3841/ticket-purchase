@@ -39,16 +39,14 @@ class DamaiBot:
 
     def _setup_driver(self):
         """初始化驱动配置"""
-        self._check_runtime_compatibility()
-
         config_device_name = (self.config.device_name or "").strip()
         if config_device_name:
-            self._assert_device_online(config_device_name)
-            device_name = config_device_name
+            device_name = self._assert_device_online(config_device_name)
         else:
             device_name = self._detect_device_name()
 
         self.device_name = device_name
+        self._check_runtime_compatibility()
         self._remember_current_ime()
 
         app_package = "cn.damai"
@@ -217,17 +215,30 @@ class DamaiBot:
     def _assert_device_online(self, target_device):
         """校验指定设备是否在线"""
         devices = self._get_online_devices()
-        if target_device not in devices:
-            raise RuntimeError(
-                f"配置的 device_name={target_device} 未在线，当前在线设备: {', '.join(devices) if devices else '无'}"
-            )
+        if target_device in devices:
+            return target_device
 
-        return True
+        # 兼容无线调试场景：在线设备序列号可能为 adb-<serial>... 形式
+        fuzzy_matches = [d for d in devices if target_device in d or d in target_device]
+        if len(fuzzy_matches) == 1:
+            matched_device = fuzzy_matches[0]
+            print(f"配置设备 {target_device} 已匹配在线设备 {matched_device}")
+            return matched_device
+
+        raise RuntimeError(
+            f"配置的 device_name={target_device} 未在线，当前在线设备: {', '.join(devices) if devices else '无'}"
+        )
 
     def _check_runtime_compatibility(self):
         """在已知不兼容的模拟器环境提前失败，避免进入流程后才闪退。"""
-        code_abi, abi, _ = self._run_command(["adb", "shell", "getprop", "ro.product.cpu.abi"], timeout=8)
-        code_qemu, qemu, _ = self._run_command(["adb", "shell", "getprop", "ro.kernel.qemu"], timeout=8)
+        code_abi, abi, _ = self._run_command(
+            self._adb_command(["shell", "getprop", "ro.product.cpu.abi"]),
+            timeout=8,
+        )
+        code_qemu, qemu, _ = self._run_command(
+            self._adb_command(["shell", "getprop", "ro.kernel.qemu"]),
+            timeout=8,
+        )
 
         if code_abi != 0 or code_qemu != 0:
             print("警告: 无法读取设备 ABI/QEMU 属性，跳过兼容性检查")
@@ -246,12 +257,16 @@ class DamaiBot:
 
     def _resolve_main_activity(self, package_name):
         """自动解析应用主启动 Activity，避免版本升级后 Activity 变更导致启动失败"""
-        code, packages, _ = self._run_command(["adb", "shell", "pm", "list", "packages"], timeout=10)
+        code, packages, _ = self._run_command(
+            self._adb_command(["shell", "pm", "list", "packages"]),
+            timeout=10,
+        )
         if code != 0 or f"package:{package_name}" not in packages:
             raise RuntimeError(f"未检测到应用 {package_name}，请先在设备安装大麦 APP")
 
         code, stdout, stderr = self._run_command(
-            ["adb", "shell", "cmd", "package", "resolve-activity", "--brief", package_name], timeout=10
+            self._adb_command(["shell", "cmd", "package", "resolve-activity", "--brief", package_name]),
+            timeout=10,
         )
         resolved_output = f"{stdout}\n{stderr}".strip()
 
