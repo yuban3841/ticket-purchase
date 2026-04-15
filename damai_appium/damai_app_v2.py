@@ -29,6 +29,7 @@ class DamaiBot:
         self.wait = None
         self.device_name = None
         self.original_ime = None
+        self.target_detail_confirmed = False
         print(
             "当前配置: "
             f"keyword={self.config.keyword}, city={self.config.city}, "
@@ -498,7 +499,53 @@ class DamaiBot:
             return False
 
         print(f"已确认目标演出详情页: {keyword}")
+        self.target_detail_confirmed = True
         return True
+
+    def _recover_target_detail_page(self, max_back_steps=1):
+        """在同一会话中尝试返回上一层恢复到目标详情页。"""
+        keyword = (self.config.keyword or "").strip()
+
+        for step in range(1, max_back_steps + 1):
+            print(f"恢复步骤: 返回上一层 {step}/{max_back_steps}")
+            try:
+                self.driver.back()
+                time.sleep(0.5)
+            except Exception as exc:
+                print(f"恢复步骤失败: {exc}")
+                return False
+
+            self.dismiss_startup_popups()
+            if self._is_on_target_event_detail(keyword):
+                print(f"恢复检查: 已回到目标演出详情页[{keyword}]")
+                return True
+
+        print(f"恢复检查: 未能通过返回操作回到目标演出详情页[{keyword}]")
+        return False
+
+    def _rebuild_driver_session(self):
+        """销毁并重建会话。"""
+        print("恢复策略: 重建驱动会话")
+        try:
+            if self.driver:
+                self.driver.quit()
+        except Exception:
+            pass
+        finally:
+            self.driver = None
+
+        self._setup_driver()
+
+    def _shutdown_driver_session(self):
+        """结束会话并恢复输入法。"""
+        try:
+            if self.driver:
+                self.driver.quit()
+        except Exception:
+            pass
+        finally:
+            self.driver = None
+            self._restore_device_ime()
 
     def run_ticket_grabbing(self):
         """执行抢票主流程"""
@@ -508,12 +555,21 @@ class DamaiBot:
 
             self.dismiss_startup_popups()
 
-            if not self._search_and_open_target_event():
-                return False
+            if self.target_detail_confirmed:
+                # 已命中过目标演出时，优先只回退一层恢复，避免重复刷新搜索链路。
+                if not self._recover_target_detail_page(max_back_steps=1):
+                    print("恢复策略: 回退失败，改为重新定位目标演出")
+                    if not self._search_and_open_target_event():
+                        return False
+            else:
+                if not self._search_and_open_target_event():
+                    return False
 
             if not self._is_on_target_event_detail(self.config.keyword):
                 print(f"安全拦截: 当前页面不属于目标演出[{self.config.keyword}]，停止本次尝试")
                 return False
+
+            self.target_detail_confirmed = True
 
             # 1. 城市选择 - 准备多个备选方案
             print("选择城市...")
@@ -636,36 +692,38 @@ class DamaiBot:
         except Exception as e:
             print(f"抢票过程发生错误: {e}")
             return False
-        finally:
-            time.sleep(1)  # 给最后的操作一点时间
-            try:
-                if self.driver:
-                    self.driver.quit()
-            finally:
-                self._restore_device_ime()
-                self.driver = None
 
     def run_with_retry(self, max_retries=3):
         """带重试机制的抢票"""
-        for attempt in range(max_retries):
-            print(f"第 {attempt + 1} 次尝试...")
-            if self.run_ticket_grabbing():
-                print("抢票成功！")
-                return True
-            else:
-                print(f"第 {attempt + 1} 次尝试失败")
-                if attempt < max_retries - 1:
-                    print("2秒后重试...")
-                    time.sleep(2)
-                    # 重新初始化驱动
-                    try:
-                        self.driver.quit()
-                    except:
-                        pass
-                    self._setup_driver()
+        try:
+            for attempt in range(max_retries):
+                print(f"第 {attempt + 1} 次尝试...")
+                if self.run_ticket_grabbing():
+                    print("抢票成功！")
+                    return True
 
-        print("所有尝试均失败")
-        return False
+                print(f"第 {attempt + 1} 次尝试失败")
+                if attempt >= max_retries - 1:
+                    break
+
+                print("2秒后重试...")
+                time.sleep(2)
+
+                try:
+                    if self._recover_target_detail_page(max_back_steps=1):
+                        print("恢复策略: 已回到目标详情页，继续下一轮")
+                        continue
+                    print("恢复策略: 回退恢复失败，将重建会话")
+                except Exception as exc:
+                    print(f"恢复策略: 回退过程异常，将重建会话: {exc}")
+
+                self._rebuild_driver_session()
+
+            print("所有尝试均失败")
+            return False
+        finally:
+            time.sleep(1)
+            self._shutdown_driver_session()
 
     def dismiss_startup_popups(self):
         """处理首启隐私协议、权限授权等常见弹窗"""
