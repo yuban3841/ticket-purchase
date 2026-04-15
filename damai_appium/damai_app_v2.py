@@ -360,12 +360,26 @@ class DamaiBot:
                 el = WebDriverWait(self.driver, timeout).until(
                     EC.presence_of_element_located((selector_by, selector_value))
                 )
+                try:
+                    el.click()
+                    return True
+                except Exception:
+                    pass
+
+                try:
+                    self.driver.execute_script("mobile: clickGesture", {"elementId": el.id})
+                    return True
+                except Exception:
+                    pass
+
                 rect = el.rect
                 x = rect['x'] + rect['width'] // 2
                 y = rect['y'] + rect['height'] // 2
                 self.driver.execute_script("mobile: clickGesture", {"x": x, "y": y, "duration": 50})
                 return True
             except TimeoutException:
+                continue
+            except Exception:
                 continue
         return False
 
@@ -401,6 +415,33 @@ class DamaiBot:
         ]
         keyword_element = self._wait_for_any_element(keyword_selectors, timeout=0.6)
         return keyword_element is not None
+
+    def _is_on_search_page(self):
+        """判断当前是否仍在搜索输入/结果页。"""
+        search_markers = [
+            "cn.damai:id/header_search_v2_input",
+            "cn.damai:id/search_v2_suggest_recycler",
+            "cn.damai:id/search_v2_result_recycler",
+        ]
+        for marker in search_markers:
+            try:
+                if self.driver.find_elements(By.ID, marker):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _try_click_search_result(self, keyword):
+        """尝试点击搜索结果，兼容建议列表与结果列表。"""
+        keyword = (keyword or "").strip()
+        result_selectors = [
+            (By.XPATH, f'(//*[contains(@resource-id,"ll_search_item")]//*[contains(@text,"{keyword}")]/ancestor::*[contains(@resource-id,"ll_search_item")])[1]'),
+            (By.XPATH, f'(//*[contains(@resource-id,"ll_search_item")]//*[contains(@text,"{keyword}")])[1]'),
+            (By.XPATH, f'(//*[contains(@text,"{keyword}")])[1]'),
+            (By.XPATH, '(//*[contains(@resource-id,"ll_search_item")])[1]'),
+            (By.XPATH, '(//androidx.recyclerview.widget.RecyclerView/*[1])[1]'),
+        ]
+        return self.smart_wait_and_click(*result_selectors[0], result_selectors[1:], timeout=1.8)
 
     def _open_search_entry(self, max_back_steps=3):
         """打开搜索入口；若不在首页会尝试回退。"""
@@ -467,27 +508,29 @@ class DamaiBot:
             except Exception:
                 pass
 
+        try:
+            self.driver.hide_keyboard()
+        except Exception:
+            pass
+
         time.sleep(0.6)
 
         print("步骤3/4: 点击匹配结果")
-        keyword_result_selectors = [
-            (By.XPATH, f'(//*[@resource-id="cn.damai:id/ll_search_item"]//*[contains(@text,"{keyword}")]/ancestor::*[@resource-id="cn.damai:id/ll_search_item"])[1]'),
-            (By.XPATH, f'(//*[@resource-id="cn.damai:id/ll_search_item"]//*[contains(@text,"{keyword}")])[1]'),
-            (By.XPATH, '(//*[@resource-id="cn.damai:id/ll_search_item"])[1]'),
-            (By.XPATH, '//androidx.recyclerview.widget.RecyclerView[@resource-id="cn.damai:id/search_v2_suggest_recycler"]/android.widget.RelativeLayout[1]'),
-        ]
-        clicked_any = self.smart_wait_and_click(*keyword_result_selectors[0], keyword_result_selectors[1:], timeout=1.5)
-        if clicked_any:
-            time.sleep(0.5)
+        clicked_any = False
+        for retry in range(1, 4):
+            clicked = self._try_click_search_result(keyword)
+            clicked_any = clicked_any or clicked
 
-        if not self._is_on_target_event_detail(keyword):
-            first_result_selectors = [
-                (By.XPATH, '(//*[@resource-id="cn.damai:id/ll_search_item"])[1]'),
-                (By.XPATH, '(//android.widget.LinearLayout[@resource-id="cn.damai:id/ll_search_item"])[1]'),
-            ]
-            clicked_any = self.smart_wait_and_click(*first_result_selectors[0], first_result_selectors[1:], timeout=2.0) or clicked_any
-            if clicked_any:
+            if clicked:
                 time.sleep(0.8)
+                self.dismiss_startup_popups()
+
+            if self._is_on_target_event_detail(keyword):
+                break
+
+            if retry < 3 and self._is_on_search_page():
+                print(f"步骤3重试: 第 {retry} 次点击后仍在搜索页，继续尝试")
+                time.sleep(0.4)
 
         if not clicked_any:
             print(f"安全拦截: 未找到目标演出[{keyword}]搜索结果，已停止本次尝试")
