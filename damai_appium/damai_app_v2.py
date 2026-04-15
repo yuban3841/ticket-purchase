@@ -8,6 +8,7 @@ __Created__ = 2025/09/13 19:27
 
 import time
 import subprocess
+import re
 from appium import webdriver
 from appium.options.common.base import AppiumOptions
 from appium.webdriver.common.appiumby import AppiumBy
@@ -72,7 +73,7 @@ class DamaiBot:
             "disableWindowAnimation": True,  # 禁用窗口动画
             "uiautomator2ServerLaunchTimeout": 120000,
             "uiautomator2ServerInstallTimeout": 120000,
-            "uiautomator2ServerReadTimeout": 120000,
+            "uiautomator2ServerReadTimeout": 10000,
             # 优化性能配置
             "mjpegServerFramerate": 1,  # 降低截图帧率
             "shouldTerminateApp": False,
@@ -383,7 +384,17 @@ class DamaiBot:
                 return True
             except TimeoutException:
                 continue
-            except Exception:
+            except Exception as exc:
+                error_text = str(exc).lower()
+                if (
+                    "instrumentation process is not running" in error_text
+                    or "cannot be proxied" in error_text
+                    or "socket hang up" in error_text
+                    or "could not proxy command" in error_text
+                    or "timeout of" in error_text
+                ):
+                    self.last_run_error = str(exc)
+                    return False
                 continue
         return False
 
@@ -398,6 +409,72 @@ class DamaiBot:
                 continue
         return None
 
+    @staticmethod
+    def _bounds_center(bounds_text):
+        """将 Android bounds 文本转换为中心坐标。"""
+        match = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds_text or "")
+        if not match:
+            return None
+        x1, y1, x2, y2 = map(int, match.groups())
+        return (x1 + x2) // 2, (y1 + y2) // 2
+
+    def _tap_search_result_by_adb(self, keyword):
+        """当 Appium 查询抖动时，通过 adb dump UI 兜底点击搜索结果。"""
+        dump_path = "/sdcard/damai_search_dump.xml"
+        print("步骤3备用方案: 尝试通过 ADB UI dump 点击搜索结果")
+        dump_cmd = self._adb_command(["shell", "uiautomator", "dump", dump_path])
+        dump_code, _, dump_err = self._run_command(dump_cmd, timeout=10)
+        if dump_code != 0:
+            print(f"步骤3备用方案: UI dump 失败: {dump_err}")
+            return False
+
+        cat_cmd = self._adb_command(["shell", "cat", dump_path])
+        cat_code, xml_text, cat_err = self._run_command(cat_cmd, timeout=10)
+        if cat_code != 0 or not xml_text:
+            print(f"步骤3备用方案: 读取 UI dump 失败: {cat_err}")
+            return False
+
+        candidates = []
+        for line in xml_text.splitlines():
+            if "bounds=" not in line:
+                continue
+
+            line_lower = line.lower()
+            priority = None
+
+            if keyword and keyword in line:
+                priority = 1
+            elif "ll_search_item" in line_lower or "search_v2" in line_lower or "suggest_recycler" in line_lower:
+                priority = 2
+            elif 'clickable="true"' in line and ("search" in line_lower or "recycler" in line_lower):
+                priority = 3
+
+            if priority is None:
+                continue
+
+            m = re.search(r'bounds="([^\"]+)"', line)
+            if not m:
+                continue
+            center = self._bounds_center(m.group(1))
+            if not center:
+                continue
+            candidates.append((priority, center[0], center[1]))
+
+        if not candidates:
+            print("步骤3备用方案: 未在 UI dump 中识别到可点击搜索结果")
+            return False
+
+        candidates.sort(key=lambda item: item[0])
+        _, x, y = candidates[0]
+        tap_cmd = self._adb_command(["shell", "input", "tap", str(x), str(y)])
+        tap_code, _, tap_err = self._run_command(tap_cmd, timeout=6)
+        if tap_code != 0:
+            print(f"步骤3备用方案: ADB tap 失败: {tap_err}")
+            return False
+
+        print(f"步骤3备用方案: 通过 ADB 点击搜索结果坐标 ({x}, {y})")
+        return True
+
     def _is_on_target_event_detail(self, keyword):
         """校验当前是否在目标演出详情页，避免误购。"""
         keyword = (keyword or "").strip()
@@ -406,7 +483,24 @@ class DamaiBot:
             "cn.damai:id/project_detail_perform_price_flowlayout",
             "cn.damai:id/tv_tour_city",
         ]
-        has_detail_marker = any(self.driver.find_elements(By.ID, marker) for marker in detail_marker_ids)
+        has_detail_marker = False
+        try:
+            for marker in detail_marker_ids:
+                if self.driver.find_elements(By.ID, marker):
+                    has_detail_marker = True
+                    break
+        except Exception as exc:
+            error_text = str(exc).lower()
+            if (
+                "instrumentation process is not running" in error_text
+                or "cannot be proxied" in error_text
+                or "socket hang up" in error_text
+                or "could not proxy command" in error_text
+                or "timeout of" in error_text
+            ):
+                self.last_run_error = str(exc)
+            return False
+
         if not has_detail_marker:
             return False
 
@@ -417,8 +511,20 @@ class DamaiBot:
             (AppiumBy.ANDROID_UIAUTOMATOR, f'new UiSelector().textContains("{keyword}")'),
             (By.XPATH, f'//*[contains(@text,"{keyword}")]'),
         ]
-        keyword_element = self._wait_for_any_element(keyword_selectors, timeout=0.6)
-        return keyword_element is not None
+        try:
+            keyword_element = self._wait_for_any_element(keyword_selectors, timeout=0.6)
+            return keyword_element is not None
+        except Exception as exc:
+            error_text = str(exc).lower()
+            if (
+                "instrumentation process is not running" in error_text
+                or "cannot be proxied" in error_text
+                or "socket hang up" in error_text
+                or "could not proxy command" in error_text
+                or "timeout of" in error_text
+            ):
+                self.last_run_error = str(exc)
+            return False
 
     def _is_on_search_page(self):
         """判断当前是否仍在搜索输入/结果页。"""
@@ -525,7 +631,28 @@ class DamaiBot:
             clicked = self._try_click_search_result(keyword)
             clicked_any = clicked_any or clicked
 
+            if self.last_run_error:
+                last_error_text = self.last_run_error.lower()
+                if (
+                    "instrumentation process is not running" in last_error_text
+                    or "cannot be proxied" in last_error_text
+                    or "socket hang up" in last_error_text
+                    or "could not proxy command" in last_error_text
+                    or "timeout of" in last_error_text
+                ):
+                    if retry < 3 and self._tap_search_result_by_adb(keyword):
+                        clicked_any = True
+                        self.last_run_error = ""
+                        time.sleep(0.8)
+                        self.dismiss_startup_popups()
+                    else:
+                        raise RuntimeError(self.last_run_error)
+
             if clicked:
+                time.sleep(0.8)
+                self.dismiss_startup_popups()
+            elif retry < 3 and self._tap_search_result_by_adb(keyword):
+                clicked_any = True
                 time.sleep(0.8)
                 self.dismiss_startup_popups()
 
@@ -760,6 +887,8 @@ class DamaiBot:
                     "instrumentation process is not running" in error_text
                     or "cannot be proxied" in error_text
                     or "socket hang up" in error_text
+                    or "could not proxy command" in error_text
+                    or "timeout of" in error_text
                 ):
                     print("恢复策略: 检测到 UiAutomator2 会话异常，跳过回退直接重建会话")
                     self._rebuild_driver_session()
